@@ -33,6 +33,7 @@ require (
 )
 
 require (
+	git.gay/itouakirai/puppyready v0.0.0-20260913143313-17be0787ee7f
 	github.com/AlecAivazis/survey/v2 v2.3.7
 	github.com/Eyevinn/mp4ff v0.55.0
 	github.com/WorldObservationLog/Temari/bindings/go v0.5.1

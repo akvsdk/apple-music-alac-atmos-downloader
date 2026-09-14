@@ -677,12 +677,28 @@ func patchInPlace(data []byte, off int64, size int, bodyEndBit int) bool {
 	return true
 }
 
-// ---------- main ------------------------------------------------------------
+// ---------- main / API ------------------------------------------------------
 
-func Run(path string, force bool, outPath ...string) error {
+// BadPacket records details about a malformed packet that was patched.
+type BadPacket struct {
+	TrackID    uint32
+	Idx        int
+	Off        int64
+	Size       int
+	BodyEndBit int
+}
+
+// Result records the outcome of scanning and patching an ALAC file.
+type Result struct {
+	TracksCount int
+	Patched     int
+	Report      []BadPacket
+}
+
+func fixFile(path string, force bool, verbose bool, outPath ...string) (Result, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return Result{}, err
 	}
 	dst := path
 	if len(outPath) > 0 && outPath[0] != "" {
@@ -690,27 +706,20 @@ func Run(path string, force bool, outPath ...string) error {
 	}
 	tracks, err := findAlacTracks(data)
 	if err != nil {
-		return err
+		return Result{}, err
 	}
 	if len(tracks) == 0 {
-		return nil
+		return Result{}, nil
 	}
 
-	type bad struct {
-		trackID    uint32
-		idx        int
-		off        int64
-		size       int
-		bodyEndBit int
-	}
-
-	patched := 0
-	var report []bad
+	res := Result{TracksCount: len(tracks)}
 
 	for _, td := range tracks {
 		params := td.params
-		fmt.Printf("Track #%d: %d packets, max_samples_per_frame=%d sample_size=%d channels=%d\n",
-			td.trackID, len(td.locs), params.maxSamplesPerFrame, params.sampleSize, params.channels)
+		if verbose {
+			fmt.Printf("Track #%d: %d packets, max_samples_per_frame=%d sample_size=%d channels=%d\n",
+				td.trackID, len(td.locs), params.maxSamplesPerFrame, params.sampleSize, params.channels)
+		}
 
 		for idx, loc := range td.locs {
 			pkt := data[loc.offset : loc.offset+int64(loc.size)]
@@ -729,21 +738,63 @@ func Run(path string, force bool, outPath ...string) error {
 				}
 			}
 			if patchInPlace(data, loc.offset, loc.size, bodyEnd) {
-				patched++
-				report = append(report, bad{td.trackID, idx, loc.offset, loc.size, bodyEnd})
+				res.Patched++
+				res.Report = append(res.Report, BadPacket{
+					TrackID:    td.trackID,
+					Idx:        idx,
+					Off:        loc.offset,
+					Size:       loc.size,
+					BodyEndBit: bodyEnd,
+				})
 			}
 		}
 	}
 
-	if patched > 0 || force {
+	if res.Patched > 0 || force {
 		if err := os.WriteFile(dst, data, 0644); err != nil {
-			return err
+			return res, err
 		}
-		fmt.Printf("Patched %d packet(s).\n", patched)
-		for _, r := range report {
-			fmt.Printf("  track #%d packet #%d  file_offset=0x%x  size=%d  body_ends_at_bit=%d  tail_overwritten=[%d..%d)\n",
-				r.trackID, r.idx, r.off, r.size, r.bodyEndBit, r.bodyEndBit, r.size*8)
+		if verbose {
+			fmt.Printf("Patched %d packet(s).\n", res.Patched)
+			for _, r := range res.Report {
+				fmt.Printf("  track #%d packet #%d  file_offset=0x%x  size=%d  body_ends_at_bit=%d  tail_overwritten=[%d..%d)\n",
+					r.TrackID, r.Idx, r.Off, r.Size, r.BodyEndBit, r.BodyEndBit, r.Size*8)
+			}
 		}
 	}
+	return res, nil
+}
+
+// Fix scans and patches malformed ALAC packets without console output.
+func Fix(path string, force bool, outPath ...string) (Result, error) {
+	return fixFile(path, force, false, outPath...)
+}
+
+// Run scans and patches malformed ALAC packets in an audio file.
+// If repairs were made, it prints a single line with the count of affected packets repaired.
+// If no repairs were needed, it briefly reminds that the audio has integrity.
+func Run(path string, force bool, outPath ...string) error {
+	res, err := fixFile(path, force, false, outPath...)
+	if err != nil {
+		return err
+	}
+	if res.TracksCount == 0 {
+		return nil
+	}
+	if res.Patched > 0 {
+		packetWord := "packets"
+		if res.Patched == 1 {
+			packetWord = "packet"
+		}
+		fmt.Printf("Repaired %d affected %s\n", res.Patched, packetWord)
+	} else {
+		fmt.Println("Audio integrity intact")
+	}
 	return nil
+}
+
+// RunVerbose scans and patches malformed ALAC packets and outputs detailed debug logs.
+func RunVerbose(path string, force bool, outPath ...string) error {
+	_, err := fixFile(path, force, true, outPath...)
+	return err
 }
