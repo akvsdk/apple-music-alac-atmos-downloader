@@ -123,6 +123,48 @@ func TestMuxOutputCanBeTaggedWithoutMovingSamples(t *testing.T) {
 	}
 }
 
+func TestAssignOutputTrackIDsPreservesSupplementaryTrack(t *testing.T) {
+	video := &mp4.TrakBox{Tkhd: &mp4.TkhdBox{}}
+	captions := &mp4.TrakBox{Tkhd: &mp4.TkhdBox{}}
+	audio := &mp4.TrakBox{Tkhd: &mp4.TkhdBox{}}
+	videoTrex := &mp4.TrexBox{}
+	captionsTrex := &mp4.TrexBox{}
+	audioTrex := &mp4.TrexBox{}
+
+	tracks := []*streamInput{
+		{trak: video, trex: videoTrex},
+		{trak: captions, trex: captionsTrex},
+		{trak: audio, trex: audioTrex},
+	}
+	assignOutputTrackIDs(tracks[0], tracks[2], tracks)
+
+	want := []uint32{videoTrackID, 3, audioTrackID}
+	for i, stream := range tracks {
+		if stream.outputTrackID != want[i] || stream.trak.Tkhd.TrackID != want[i] || stream.trex.TrackID != want[i] {
+			t.Fatalf("track %d IDs = output:%d trak:%d trex:%d, want %d", i, stream.outputTrackID, stream.trak.Tkhd.TrackID, stream.trex.TrackID, want[i])
+		}
+	}
+}
+
+func TestSelectMoofTrackKeepsOnlyRequestedTraf(t *testing.T) {
+	videoTraf := &mp4.TrafBox{Tfhd: &mp4.TfhdBox{TrackID: 1}}
+	captionsTraf := &mp4.TrafBox{Tfhd: &mp4.TfhdBox{TrackID: 2}}
+	moof := &mp4.MoofBox{
+		Mfhd:     &mp4.MfhdBox{},
+		Traf:     videoTraf,
+		Trafs:    []*mp4.TrafBox{videoTraf, captionsTraf},
+		Children: []mp4.Box{videoTraf, captionsTraf},
+	}
+
+	selected := selectMoofTrack(moof, videoTraf)
+	if len(selected.Trafs) != 1 || selected.Trafs[0] != videoTraf {
+		t.Fatalf("unexpected selected trafs: %#v", selected.Trafs)
+	}
+	if len(selected.Children) != 1 || selected.Children[0] != videoTraf {
+		t.Fatalf("unexpected selected children: %#v", selected.Children)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

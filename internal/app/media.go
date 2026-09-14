@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/grafov/m3u8"
-	"github.com/olekukonko/tablewriter"
 	"github.com/itouakirai/go-mp4tag"
+	"github.com/olekukonko/tablewriter"
 	"io"
 	"net/http"
 	"net/url"
@@ -635,30 +635,35 @@ func (r *Runner) extractMedia(b string, more_mode bool) (string, string, error) 
 }
 
 func (r *Runner) extractVideo(c string) (string, error) {
+	streamURL, _, err := r.extractVideoVariant(c)
+	return streamURL, err
+}
+
+func (r *Runner) extractVideoVariant(c string) (string, bool, error) {
 	MediaUrl, err := url.Parse(c)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	resp, err := download.Get(c)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", errors.New(resp.Status)
+		return "", false, errors.New(resp.Status)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	videoString := string(body)
 
 	from, listType, err := m3u8.DecodeFrom(strings.NewReader(videoString), true)
 	if err != nil || listType != m3u8.MASTER {
-		return "", errors.New("m3u8 not of media type")
+		return "", false, errors.New("m3u8 not of media type")
 	}
 
 	video := from.(*m3u8.MasterPlaylist)
@@ -666,6 +671,7 @@ func (r *Runner) extractVideo(c string) (string, error) {
 	re := regexp.MustCompile(`_(\d+)x(\d+)`)
 
 	var streamUrl *url.URL
+	var selectedVariant *m3u8.Variant
 	sort.Slice(video.Variants, func(i, j int) bool {
 		return video.Variants[i].AverageBandwidth > video.Variants[j].AverageBandwidth
 	})
@@ -684,17 +690,38 @@ func (r *Runner) extractVideo(c string) (string, error) {
 			if h <= maxHeight {
 				streamUrl, err = MediaUrl.Parse(variant.URI)
 				if err != nil {
-					return "", err
+					return "", false, err
 				}
+				selectedVariant = variant
 				fmt.Println("Video: " + variant.Resolution + "-" + variant.VideoRange)
 				break
 			}
 		}
 	}
 
-	if streamUrl == nil {
-		return "", errors.New("no suitable video stream found")
+	if streamUrl == nil || selectedVariant == nil {
+		return "", false, errors.New("no suitable video stream found")
 	}
 
-	return streamUrl.String(), nil
+	usePlayReady := strings.Contains(strings.ToUpper(streamAllowedCPC(videoString, selectedVariant.URI)), "SL3000")
+	return streamUrl.String(), usePlayReady, nil
+}
+
+func streamAllowedCPC(masterPlaylist string, variantURI string) string {
+	var attrs map[string]string
+	for _, rawLine := range strings.Split(masterPlaylist, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
+			attrs = m3u8.DecodeAttributeList(strings.TrimPrefix(line, "#EXT-X-STREAM-INF:"))
+			continue
+		}
+		if attrs == nil || line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if line == variantURI {
+			return attrs["ALLOWED-CPC"]
+		}
+		attrs = nil
+	}
+	return ""
 }

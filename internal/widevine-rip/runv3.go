@@ -275,6 +275,13 @@ func ResolveStationVariantPlaylist(masterURL string, authtoken string, mutoken s
 }
 
 func ExtractKidBase64(b string, mvmode bool) (string, string, string, error) {
+	return ExtractKeyAndURLs(b, "", mvmode)
+}
+
+// ExtractKeyAndURLs extracts a DRM key payload and the media URLs from an HLS
+// media playlist. When keyFormat is non-empty, the matching EXT-X-KEY entry is
+// used instead of the last key parsed by the m3u8 library.
+func ExtractKeyAndURLs(b string, keyFormat string, mvmode bool) (string, string, string, error) {
 	req, err := http.NewRequest(http.MethodGet, b, nil)
 	if err != nil {
 		return "", "", "", err
@@ -296,41 +303,73 @@ func ExtractKidBase64(b string, mvmode bool) (string, string, string, error) {
 	if err != nil {
 		return "", "", "", err
 	}
-	var kidbase64 string
+	var kidBase64 string
 	var uriPrefix string
 	var urlBuilder strings.Builder
 	if listType == m3u8.MEDIA {
 		mediaPlaylist := from.(*m3u8.MediaPlaylist)
-		if mediaPlaylist.Key != nil {
-			split := strings.Split(mediaPlaylist.Key.URI, ",")
-			uriPrefix = split[0]
-			kidbase64 = split[1]
-			lastSlashIndex := strings.LastIndex(b, "/")
-			// 截取最后一个斜杠之前的部分
-			urlBuilder.WriteString(b[:lastSlashIndex])
-			urlBuilder.WriteString("/")
-			urlBuilder.WriteString(mediaPlaylist.Map.URI)
-			//fileurl = b[:lastSlashIndex] + "/" + mediaPlaylist.Map.URI
-			//fmt.Println("Extracted URI:", mediaPlaylist.Map.URI)
-			if mvmode {
-				for _, segment := range mediaPlaylist.Segments {
-					if segment != nil {
-						//fmt.Println("Extracted URI:", segment.URI)
-						urlBuilder.WriteString(";")
-						urlBuilder.WriteString(b[:lastSlashIndex])
-						urlBuilder.WriteString("/")
-						urlBuilder.WriteString(segment.URI)
-						//fileurl = fileurl + ";" + b[:lastSlashIndex] + "/" + segment.URI
-					}
+		keyURI := ""
+		if keyFormat != "" {
+			keyURI = findKeyURIByFormat(masterString, keyFormat)
+		} else if mediaPlaylist.Key != nil {
+			keyURI = mediaPlaylist.Key.URI
+		}
+		if keyURI == "" {
+			return "", "", "", errors.New("no matching key information found")
+		}
+
+		uriPrefix, kidBase64, err = splitKeyURI(keyURI)
+		if err != nil {
+			return "", "", "", err
+		}
+		if mediaPlaylist.Map == nil || mediaPlaylist.Map.URI == "" {
+			return "", "", "", errors.New("no initialization segment found")
+		}
+
+		lastSlashIndex := strings.LastIndex(b, "/")
+		if lastSlashIndex == -1 {
+			return "", "", "", errors.New("invalid media playlist URL")
+		}
+		// 截取最后一个斜杠之前的部分
+		urlBuilder.WriteString(b[:lastSlashIndex])
+		urlBuilder.WriteString("/")
+		urlBuilder.WriteString(mediaPlaylist.Map.URI)
+		if mvmode {
+			for _, segment := range mediaPlaylist.Segments {
+				if segment != nil {
+					urlBuilder.WriteString(";")
+					urlBuilder.WriteString(b[:lastSlashIndex])
+					urlBuilder.WriteString("/")
+					urlBuilder.WriteString(segment.URI)
 				}
 			}
-		} else {
-			fmt.Println("No key information found")
 		}
 	} else {
-		fmt.Println("Not a media playlist")
+		return "", "", "", errors.New("not a media playlist")
 	}
-	return kidbase64, urlBuilder.String(), uriPrefix, nil
+	return kidBase64, urlBuilder.String(), uriPrefix, nil
+}
+
+func findKeyURIByFormat(playlist string, keyFormat string) string {
+	for _, rawLine := range strings.Split(playlist, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "#EXT-X-KEY:") {
+			continue
+		}
+		attrs := m3u8.DecodeAttributeList(strings.TrimPrefix(line, "#EXT-X-KEY:"))
+		if attrs["KEYFORMAT"] == keyFormat {
+			return attrs["URI"]
+		}
+	}
+	return ""
+}
+
+func splitKeyURI(keyURI string) (string, string, error) {
+	uriPrefix, keyPayload, ok := strings.Cut(keyURI, ",")
+	if !ok || uriPrefix == "" || keyPayload == "" {
+		return "", "", errors.New("invalid DRM key URI")
+	}
+	return uriPrefix, keyPayload, nil
 }
 func Extsong(b string) (*bytes.Buffer, error) {
 	req, err := http.NewRequest(http.MethodGet, b, nil)

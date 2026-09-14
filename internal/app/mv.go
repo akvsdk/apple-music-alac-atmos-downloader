@@ -10,6 +10,7 @@ import (
 	"amdl/internal/amp-api"
 	mvmedia "amdl/internal/media/mv"
 	"amdl/internal/model"
+	playreadyrip "amdl/internal/playready-rip"
 	"amdl/internal/widevine-rip/runv5"
 
 	"github.com/itouakirai/go-mp4tag"
@@ -75,11 +76,17 @@ func (r *Runner) mvDownloader(adamID string, saveDir string, token string, store
 		return err
 	}
 
-	videom3u8url, err := r.extractVideo(mvm3u8url)
+	videom3u8url, usePlayReady, err := r.extractVideoVariant(mvm3u8url)
 	if err != nil {
 		return fmt.Errorf("extract video manifest: %w", err)
 	}
-	videokeyAndUrls, err := runv5.Run(adamID, videom3u8url, token, true, r.Config.LiteServer)
+	var videokeyAndUrls string
+	if usePlayReady {
+		fmt.Println("Video DRM: PlayReady")
+		videokeyAndUrls, err = playreadyrip.Run(adamID, videom3u8url, r.Config.LiteServer)
+	} else {
+		videokeyAndUrls, err = runv5.Run(adamID, videom3u8url, token, true, r.Config.LiteServer)
+	}
 	if err != nil {
 		return fmt.Errorf("download video stream: %w", err)
 	}

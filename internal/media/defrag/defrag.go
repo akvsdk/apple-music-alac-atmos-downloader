@@ -504,6 +504,13 @@ func collectSampleGroupRuns(
 ) error {
 	sbgp := traf.Sbgp
 
+	// Apple HLS audio fragments may carry fragment-local roll sample group
+	// descriptions. Roll groups only provide random-access hints, so they can
+	// be omitted from the progressive output without changing sample data.
+	if sbgp.GroupingType == "roll" || sbgp.GroupingType == "prol" {
+		return nil
+	}
+
 	if len(sbgp.GroupingType) != 4 {
 		return fmt.Errorf(
 			"sbgp has invalid grouping type %q",
